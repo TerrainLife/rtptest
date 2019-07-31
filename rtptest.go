@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"net"
 	"sync"
@@ -22,19 +23,13 @@ type host struct {
 	port int
 }
 
-// var ssrc uint32 = 0xdeadbeef
-var ssrc uint32 = 0x11223344
-
 func fillPatternMap() {
 	for key, pattern := range patternsMap {
 		var tmp []byte
 		for i := 0; i < payloadSize/len(pattern); i++ {
 			tmp = append(tmp, pattern...)
 		}
-
 		patternsMap[key] = tmp
-
-		printBuf(patternsMap[key])
 	}
 }
 
@@ -96,14 +91,16 @@ func printBuf(buf []byte) {
 	fmt.Println("buf len=%u", len(buf))
 }
 
-func initRtpSession(local host, remote ...host) {
+func initRtpSession(wgmain *sync.WaitGroup, local host, remote ...host) {
+	defer wgmain.Done()
+
 	var wg sync.WaitGroup
 	done := make(chan struct{}, 2)
 	defer close(done)
 
 	localHost, err := net.ResolveIPAddr("ip", local.ip)
 	if err != nil {
-		fmt.Printf("Resolve Local address %s FAIL:%s", local.ip, err.Error())
+		fmt.Printf("Resolve Local address %s FAIL:%s\n", local.ip, err.Error())
 		return
 	}
 
@@ -111,7 +108,7 @@ func initRtpSession(local host, remote ...host) {
 	// The RTP session uses the transport to receive and send RTP packets to the remote peer.
 	transport, err := rtp.NewTransportUDP(localHost, local.port, "")
 	if err != nil {
-		fmt.Printf("Can not create %s:%d Transport layer:%s", local.ip, local.port, err.Error())
+		fmt.Printf("Can not create %s:%d Transport layer:%s\n", local.ip, local.port, err.Error())
 		return
 	}
 
@@ -122,7 +119,7 @@ func initRtpSession(local host, remote ...host) {
 	for _, remoteHost := range remote {
 		remoteHostConverted, err := net.ResolveIPAddr("ip", remoteHost.ip)
 		if err != nil {
-			fmt.Printf("Resolve Remote address %s FAIL:%s", remoteHost.ip, err.Error())
+			fmt.Printf("Resolve Remote address %s FAIL:%s\n", remoteHost.ip, err.Error())
 			continue
 		}
 		// Add address of a remote peer (participant)
@@ -135,17 +132,28 @@ func initRtpSession(local host, remote ...host) {
 	// streams of the same media.
 	//
 	outStreamIdx, _ := rtpSession.NewSsrcStreamOut(&rtp.Address{localHost.IP, local.port, local.port + 1, ""}, 0, 0)
+	/* 	if err != nil {
+		fmt.Printf("Can not create %s:%d ssrc stream out:%s\n", local.ip, local.port, err.Error())
+		return
+	} */
 	rtpSession.SsrcStreamOutForIndex(outStreamIdx).SetPayloadType(8)
 
 	wg.Add(1)
-	go receiveFn(done, &wg)
+	go receiveFn(rtpSession, done, &wg)
+
+	fmt.Printf("Start RTP Session %s:%d ssrc=%x\n", local.ip, local.port, rtpSession.SsrcStreamOutForIndex(outStreamIdx).Ssrc())
+	fmt.Printf("Remote hosts:\n")
+	for _, remoteHost := range remote {
+		fmt.Printf("%s:%d", remoteHost.ip, remoteHost.port)
+	}
+	fmt.Printf("\n")
 
 	rtpSession.StartSession()
 
 	wg.Add(1)
-	go senderFn(done, &wg)
+	go senderFn(rtpSession, done, &wg)
 
-	time.Sleep(120e9)
+	time.Sleep(30 * time.Minute)
 
 	done <- struct{}{}
 	done <- struct{}{}
@@ -159,7 +167,23 @@ func main() {
 
 	fillPatternMap()
 
-	var wg sync.WaitGroup
+	var local host
+	flag.StringVar(&local.ip, "locip", "127.0.0.1", "local ip address")
+	flag.IntVar(&local.port, "locport", 20000, "local port")
 
+	var remote host
+	flag.StringVar(&remote.ip, "remip", "127.0.0.1", "remote ip address")
+	flag.IntVar(&remote.port, "remport", 10000, "remote port")
+
+	//tone := flag.String("freq", "1000Hz", "generated frequency")
+
+	flag.Parse()
+
+	var wgmain sync.WaitGroup
+
+	wgmain.Add(1)
+	go initRtpSession(&wgmain, local, remote)
+
+	wgmain.Wait()
 	fmt.Println("RTP test stop!")
 }
