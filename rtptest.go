@@ -16,11 +16,18 @@ const (
 
 var patternsMap = map[string][]byte{
 	"1000Hz": []byte{0xD5, 0x23, 0x2A, 0x23, 0xD5, 0xA3, 0xAA, 0xA3},
+	"500Hz":  []byte{0xD5, 0x8D, 0xB3, 0xB8, 0xA5, 0xB8, 0xB3, 0x8D, 0x55, 0x0D, 0x33, 0x38, 0x25, 0x38, 0x33, 0x0D},
 }
 
 type host struct {
 	ip   string
 	port int
+}
+
+type runFlags struct {
+	genTone string
+	rdFile  string
+	wrFile  string
 }
 
 func fillPatternMap() {
@@ -33,7 +40,7 @@ func fillPatternMap() {
 	}
 }
 
-func receiveFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup) {
+func receiveFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup, params runFlags) {
 	defer wg.Done()
 
 	// Create and store the data receive channel.
@@ -55,7 +62,7 @@ func receiveFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup
 
 }
 
-func senderFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup) {
+func senderFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup, params runFlags) {
 	defer wg.Done()
 
 	ticker := time.NewTicker(20 * time.Millisecond)
@@ -66,13 +73,22 @@ func senderFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup)
 		case <-ticker.C:
 			rp := rtpSession.NewDataPacket(stamp)
 
-			rp.SetPayload(patternsMap["1000Hz"][:])
+			payload := patternsMap["1000Hz"]
+			if params.rdFile != "" {
+
+			} else if params.genTone != "" {
+				tone, pres := patternsMap[params.genTone]
+				if pres {
+					payload = tone
+				}
+			}
+
+			rp.SetPayload(payload[:])
 			rtpSession.WriteData(rp)
 			rp.FreePacket()
 			if (cnt % 50) == 0 {
 				fmt.Printf("Sent %d packets\n", cnt)
-
-				printBuf(patternsMap["1000Hz"])
+				//printBuf(payload)
 			}
 			cnt++
 			stamp += 160
@@ -91,7 +107,7 @@ func printBuf(buf []byte) {
 	fmt.Println("buf len=%u", len(buf))
 }
 
-func initRtpSession(wgmain *sync.WaitGroup, local host, remote ...host) {
+func initRtpSession(wgmain *sync.WaitGroup, params runFlags, local host, remote ...host) {
 	defer wgmain.Done()
 
 	var wg sync.WaitGroup
@@ -139,7 +155,7 @@ func initRtpSession(wgmain *sync.WaitGroup, local host, remote ...host) {
 	rtpSession.SsrcStreamOutForIndex(outStreamIdx).SetPayloadType(8)
 
 	wg.Add(1)
-	go receiveFn(rtpSession, done, &wg)
+	go receiveFn(rtpSession, done, &wg, params)
 
 	fmt.Printf("Start RTP Session %s:%d ssrc=%x\n", local.ip, local.port, rtpSession.SsrcStreamOutForIndex(outStreamIdx).Ssrc())
 	fmt.Printf("Remote hosts:\n")
@@ -151,7 +167,7 @@ func initRtpSession(wgmain *sync.WaitGroup, local host, remote ...host) {
 	rtpSession.StartSession()
 
 	wg.Add(1)
-	go senderFn(rtpSession, done, &wg)
+	go senderFn(rtpSession, done, &wg, params)
 
 	time.Sleep(30 * time.Minute)
 
@@ -175,14 +191,17 @@ func main() {
 	flag.StringVar(&remote.ip, "remip", "127.0.0.1", "remote ip address")
 	flag.IntVar(&remote.port, "remport", 10000, "remote port")
 
-	//tone := flag.String("freq", "1000Hz", "generated frequency")
+	var params runFlags
+	flag.StringVar(&params.genTone, "freq", "1000Hz", "generated frequency")
+	flag.StringVar(&params.genTone, "rdfile", "", "read&send to ip data from this file (alaw, 8000Hz)")
+	flag.StringVar(&params.genTone, "wrfile", "", "received data writing to this file")
 
 	flag.Parse()
 
 	var wgmain sync.WaitGroup
 
 	wgmain.Add(1)
-	go initRtpSession(&wgmain, local, remote)
+	go initRtpSession(&wgmain, params, local, remote)
 
 	wgmain.Wait()
 	fmt.Println("RTP test stop!")
