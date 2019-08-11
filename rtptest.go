@@ -3,7 +3,10 @@ package main
 import (
 	"flag"
 	"fmt"
+	"io"
+	"log"
 	"net"
+	"os"
 	"sync"
 	"time"
 
@@ -43,6 +46,16 @@ func fillPatternMap() {
 func receiveFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup, params runFlags) {
 	defer wg.Done()
 
+	var wrFile *os.File
+	if params.wrFile != "" {
+		var err error
+		wrFile, err = os.Create(params.wrFile)
+		if err != nil {
+			log.Fatalf("Error open file %s : %s\n", params.wrFile, err.Error())
+		}
+		defer wrFile.Close()
+	}
+
 	// Create and store the data receive channel.
 	dataReceiver := rtpSession.CreateDataReceiveChan()
 	var cnt int
@@ -50,6 +63,9 @@ func receiveFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup
 	for {
 		select {
 		case rp := <-dataReceiver: // just get a packet - maybe we add some tests later
+			if params.wrFile != "" {
+				wrFile.Write(rp.Payload())
+			}
 			if (cnt % 50) == 0 {
 				fmt.Printf("Remote receiver got %d packets\n", cnt)
 			}
@@ -65,17 +81,43 @@ func receiveFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup
 func senderFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup, params runFlags) {
 	defer wg.Done()
 
+	var rdFile *os.File
+	if params.rdFile != "" {
+		var err error
+		rdFile, err = os.Open(params.rdFile)
+		if err != nil {
+			log.Fatalf("Error open file %s : %s\n", params.rdFile, err.Error())
+		}
+		defer rdFile.Close()
+
+		// check on file size greater than minimal packet payload size
+		stat, err := rdFile.Stat()
+		if err != nil {
+			log.Fatalf("Error checking read file size %s : %s\n", params.rdFile, err.Error())
+		}
+		if stat.Size() < payloadSize {
+			log.Fatalln("Error: read file size must be gerater than ", payloadSize)
+		}
+	}
+
 	ticker := time.NewTicker(20 * time.Millisecond)
 	var cnt int
 	stamp := uint32(0)
+
+	payload := make([]byte, payloadSize)
 	for {
 		select {
 		case <-ticker.C:
 			rp := rtpSession.NewDataPacket(stamp)
 
-			payload := patternsMap["1000Hz"]
 			if params.rdFile != "" {
-
+				n, err := rdFile.Read(payload)
+				if err != nil {
+					rdFile.Seek(0, 0)
+					if err == io.EOF && n < payloadSize {
+						rdFile.Read(payload[n:])
+					}
+				}
 			} else if params.genTone != "" {
 				tone, pres := patternsMap[params.genTone]
 				if pres {
@@ -88,6 +130,7 @@ func senderFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup,
 			rp.FreePacket()
 			if (cnt % 50) == 0 {
 				fmt.Printf("Sent %d packets\n", cnt)
+				fmt.Println(string(payload[:]))
 				//printBuf(payload)
 			}
 			cnt++
@@ -164,7 +207,10 @@ func initRtpSession(wgmain *sync.WaitGroup, params runFlags, local host, remote 
 	}
 	fmt.Printf("\n")
 
-	rtpSession.StartSession()
+	err = rtpSession.StartSession()
+	if err != nil {
+		log.Fatalln("Error start rtp session", err.Error())
+	}
 
 	wg.Add(1)
 	go senderFn(rtpSession, done, &wg, params)
@@ -193,8 +239,8 @@ func main() {
 
 	var params runFlags
 	flag.StringVar(&params.genTone, "freq", "1000Hz", "generated frequency")
-	flag.StringVar(&params.genTone, "rdfile", "", "read&send to ip data from this file (alaw, 8000Hz)")
-	flag.StringVar(&params.genTone, "wrfile", "", "received data writing to this file")
+	flag.StringVar(&params.rdFile, "rdfile", "", "read&send to ip data from this file (alaw, 8000Hz)")
+	flag.StringVar(&params.wrFile, "wrfile", "", "received data writing to this file")
 
 	flag.Parse()
 
