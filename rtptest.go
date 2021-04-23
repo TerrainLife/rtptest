@@ -31,6 +31,7 @@ type runFlags struct {
 	genTone string
 	rdFile  string
 	wrFile  string
+	count   int
 }
 
 func fillPatternMap() {
@@ -130,7 +131,7 @@ func senderFn(rtpSession *rtp.Session, done <-chan struct{}, wg *sync.WaitGroup,
 			rp.FreePacket()
 			if (cnt % 50) == 0 {
 				fmt.Printf("Sent %d packets\n", cnt)
-				fmt.Println(string(payload[:]))
+				//fmt.Println(string(payload[:]))
 				//printBuf(payload)
 			}
 			cnt++
@@ -241,13 +242,17 @@ func main() {
 	flag.StringVar(&params.genTone, "freq", "1000Hz", "generated frequency")
 	flag.StringVar(&params.rdFile, "rdfile", "", "read&send to ip data from this file (alaw, 8000Hz)")
 	flag.StringVar(&params.wrFile, "wrfile", "", "received data writing to this file")
+	flag.IntVar(&params.count, "cnt", 1, "number of rtp channels (local&remote port numbers increased by 2)")
 
 	flag.Parse()
 
 	var wgmain sync.WaitGroup
-
-	wgmain.Add(1)
-	go initRtpSession(&wgmain, params, local, remote)
+	for i := 0; i < params.count; i++ {
+		wgmain.Add(1)
+		go initRtpSession(&wgmain, params, local, remote)
+		local.port += 2
+		remote.port += 2
+	}
 
 	wgmain.Wait()
 	fmt.Println("RTP test stop!")
